@@ -7,13 +7,15 @@
 # 1) 컨테이너와 코너 캐스팅 좌표 수집
 # 2) 각 모서리에 대해 가장 가까운 코너 캐스팅 찾기
 # 3) 컨테이너 상단 코너와 상단에 위치한 코너 캐스팅 비교
-# 3-1) 감지된 코너 캐스팅이 없는 경우 : detected_corners 리스트를 None 값 4개로 초기화
+# --------------수정 사항---------------------------
+# 3-1) 감지된 코너 캐스팅이 없는 경우 : 컨테이너의 중심 좌표를 이용해서 정렬 탐지
+
+
 import cv2
 import numpy as np
 import json
 import torch
 from ultralytics import YOLO
-
 
 def is_containers_aligned(container_castings, threshold=10):
     for i in range(len(container_castings) - 1):
@@ -35,15 +37,17 @@ def distance(p1, p2):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 학습된 모델 가져오기 -> best.pt
-model = YOLO("/Users/sooox89/Desktop/advantench/best_v8_2.pt")
+model = YOLO("best.pt")
 
 # 비디오 경로 설정
-video_path = "/Users/sooox89/Desktop/advantench/video/IMG_7526.mp4"
-cap = cv2.VideoCapture(video_path)
+video_path = ""
+# cap = cv2.VideoCapture(video_path)
+cap = cv2.VideoCapture(0)
+
 
 # 비디오 저장 설정 (H.264 코덱 사용)
 fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 코덱 설정
-output_path = "output_video1.mp4"
+output_path = "output_video.mp4"
 out = cv2.VideoWriter(output_path, fourcc, cap.get(cv2.CAP_PROP_FPS),
                       (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
 
@@ -57,7 +61,9 @@ while cap.isOpened():
 
     if not success:
         break
-
+    # 비디오 해상도 가져오기
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count += 1
 
     results = model.track(frame, persist=True)
@@ -75,6 +81,9 @@ while cap.isOpened():
     corner_casting_count = 0
 
     for i, (box, cls, conf) in enumerate(zip(boxes, classes, confidences)):
+        # 여기서 confidence 값 체크
+        if conf < 0.65:
+            continue
         x1, y1, x2, y2 = box
         confidence = conf
         detected_class = cls
@@ -180,7 +189,17 @@ while cap.isOpened():
 
         container_castings.append(detected_corners)
 
-    is_aligned = is_containers_aligned(container_castings)
+    # 추가: 컨테이너의 중심 좌표를 이용한 정렬 탐지
+    container_centers = [(container["x_center"], container["y_center"]) for container in containers]
+    if len(container_centers) > 1:  # 두 개 이상의 컨테이너가 있는지 확인
+        for i in range(len(container_centers) - 1):
+            if abs(container_centers[i][0] - container_centers[i + 1][0]) > 10:
+                is_aligned = False
+                break
+        else:
+            is_aligned = True
+    else:
+        is_aligned = True
 
     if is_aligned:
         alignment_text = "All Containers Aligned"
@@ -210,9 +229,10 @@ while cap.isOpened():
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+
 cap.release()
 out.release()
 cv2.destroyAllWindows()
 
-with open('new2_1.json', 'w') as json_file:
+with open('new.json', 'w') as json_file:
     json.dump(results_data, json_file, indent=4)
