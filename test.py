@@ -1,9 +1,19 @@
+# 이 코드는 라이다 값으로 threshold 설정하여,
+# detect된 컨테이너들 중 가장 상단에 위치한 컨테이너의 상단 모서리와 현재 적재하는 컨테이너의 코너캐스팅 정렬 확인
+
+# 1. 감지된 컨테이너가 없을 때, 컨테이너 상단 코너캐스팅 좌표와 감지된 코너캐스팅 좌표를 비교하도록 로직 추가
+# 2. 감지된 컨테이너가 있을 때와 없을 때 모두 처리 가능하도록 수정
+
+# 1) 컨테이너와 코너 캐스팅 좌표 수집
+# 2) 각 모서리에 대해 가장 가까운 코너 캐스팅 찾기
+# 3) 컨테이너 상단 코너와 상단에 위치한 코너 캐스팅 비교
+# 3-1) 감지된 코너 캐스팅이 없는 경우 : detected_corners 리스트를 None 값 4개로 초기화
 import cv2
 import numpy as np
 import json
 import torch
 from ultralytics import YOLO
-from ultralytics.utils.plotting import Annotator
+
 
 def is_containers_aligned(container_castings, threshold=10):
     for i in range(len(container_castings) - 1):
@@ -16,26 +26,26 @@ def is_containers_aligned(container_castings, threshold=10):
                     return False
     return True
 
+
 def distance(p1, p2):
     return np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+
 
 # 장치 설정 (GPU 사용 가능 여부에 따라)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 학습된 모델 가져오기 -> best.pt
-model = YOLO("best.pt")
+model = YOLO("/Users/sooox89/Desktop/advantench/best_v8_2.pt")
 
 # 비디오 경로 설정
-video_path = ""
+video_path = "/Users/sooox89/Desktop/advantench/video/IMG_7526.mp4"
 cap = cv2.VideoCapture(video_path)
-# 웹캠 사용 시
-# cap = cv2.VideoCapture(0)
-
 
 # 비디오 저장 설정 (H.264 코덱 사용)
 fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 코덱 설정
 output_path = "output_video1.mp4"
-out = cv2.VideoWriter(output_path, fourcc, cap.get(cv2.CAP_PROP_FPS), (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+out = cv2.VideoWriter(output_path, fourcc, cap.get(cv2.CAP_PROP_FPS),
+                      (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
 
 # JSON 파일을 쓰기 모드로 열기
 results_data = []
@@ -79,6 +89,7 @@ while cap.isOpened():
             text_scale = 1.0  # 컨테이너 텍스트 크기
             text_thickness = 2  # 컨테이너 텍스트 두께
             box_thickness = 3  # 컨테이너 박스 두께
+            background_color = (0, 255, 255)  # 컨테이너 텍스트 배경 색상 (노란색)
 
         elif name == 'corner-casting':
             corner_casting_count += 1
@@ -88,8 +99,8 @@ while cap.isOpened():
             text_color = (0, 0, 255)  # 코너 캐스팅 텍스트 색상 (빨강)
             text_scale = 0.8  # 코너 캐스팅 텍스트 크기
             text_thickness = 2  # 코너 캐스팅 텍스트 두께
-            box_thickness = 2  # 컨테이너 박스 두께
-
+            box_thickness = 2  # 코너 캐스팅 박스 두께
+            background_color = (255, 255, 255)  # 코너 캐스팅 텍스트 배경 색상 (흰색)
 
         x_center = (x1 + x2) / 2
         y_center = (y1 + y2) / 2
@@ -118,17 +129,16 @@ while cap.isOpened():
 
         if name == 'container':
             label_y = int(y1) - 10 if y1 > 10 else int(y1) + label_size[1] + 10
-            background_color = (000, 255, 255)  # 컨테이너 텍스트 배경 색상 (회색)
         elif name == 'corner-casting':
             label_y = int(y2) + label_size[1] + 10 if y2 < frame.shape[0] - 10 else int(y2) - 10
-            background_color = (255, 255, 255)  # 코너 캐스팅 텍스트 배경 색상 (연한 빨강)
 
         cv2.rectangle(frame, (label_x, label_y - label_size[1] - 2), (label_x + label_size[0], label_y + 2),
                       background_color, cv2.FILLED)
         cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, text_scale, (0, 0, 0), text_thickness)
 
     results_data.append(detection_results)
-    print(f"{frame_count}: {frame.shape[1]}x{frame.shape[0]} {container_count} containers, {corner_casting_count} corner-castings")
+    print(
+        f"{frame_count}: {frame.shape[1]}x{frame.shape[0]} {container_count} containers, {corner_casting_count} corner-castings")
 
     containers = []
     corner_castings = []
@@ -156,6 +166,15 @@ while cap.isOpened():
             for corner in corners:
                 closest_corner_casting = min(corner_castings, key=lambda cc: distance(corner, cc))
                 detected_corners.append(closest_corner_casting)
+
+            # 컨테이너 상단 코너와 상단에 위치한 코너 캐스팅을 비교하여 정렬 여부 확인
+            upper_corners = [(x1, y1), (x2, y1)]
+            for upper_corner in upper_corners:
+                upper_closest_corner_casting = min([cc for cc in corner_castings if cc[1] < upper_corner[1]],
+                                                   key=lambda cc: distance(upper_corner, cc), default=None)
+                if upper_closest_corner_casting:
+                    detected_corners.append(upper_closest_corner_casting)
+
         else:
             detected_corners = [None] * 4
 
@@ -195,5 +214,5 @@ cap.release()
 out.release()
 cv2.destroyAllWindows()
 
-with open('results.json', 'w') as json_file:
+with open('new2_1.json', 'w') as json_file:
     json.dump(results_data, json_file, indent=4)
